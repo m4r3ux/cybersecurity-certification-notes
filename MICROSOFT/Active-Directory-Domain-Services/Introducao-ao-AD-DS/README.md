@@ -1,4 +1,4 @@
-# AD DS — Anotações de Estudo
+# README.md
 
 ## 1. O que é o AD DS
 
@@ -163,3 +163,4 @@
 * Domínio = limite de replicação + unidade administrativa.
 * RODC = ideal para filiais com segurança física fraca.
 * Grupo **Universal** = mais flexível (permissões e membros em toda a floresta).
+
