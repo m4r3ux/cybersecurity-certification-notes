@@ -426,3 +426,265 @@ Authentication, Data Access, Databases, Data Loss Prevention, Email, Endpoint, I
 - Fontes de CTI vão de dados internos (histórico da própria empresa) a sharing groups (ISAC/ISAO), OSINT e fontes comerciais — o ideal é combinar várias.
 - Splunk identifica a origem de um dado por três campos: host, source e sourcetype; comandos como `metadata` ajudam a mapear um ambiente novo rapidamente.
 - O Common Information Model (CIM) normaliza dados de fontes diferentes sob nomes de campo padronizados, permitindo que data models (ex.: Authentication) substituam buscas SPL longas e não escaláveis.
+## Anotações — SPL, Data Models na Prática e Atividades de Investigação (Frothly)
+
+## 1. Splunk Search Processing Language (SPL)
+
+- **SPL**: conjunto de comandos de busca, funções, argumentos e cláusulas que dizem ao Splunk o que fazer com os eventos recuperados dos índices.
+- Permite buscar, filtrar, modificar, manipular, inserir e apagar informação, tudo dentro da mesma linguagem.
+- Quanto melhor o domínio de SPL, mais rápido e eficaz o analista se torna.
+
+### Caso prático: possível exfiltração de dados (usuário BruceGist)
+
+Notable event gerado pelo Splunk UBA (User Behavior Analytics) indicando comportamento suspeito.
+
+**Passo 1 — mapear a atividade do usuário (dados do Cisco Network Visibility Module):**
+
+```
+user=BruceGist
+| stats count by user dh
+| sort -count
+```
+
+- `dh` = destination host.
+- Resultado mostra os domínios mais visitados por Bruce. Achado suspeito: `cfl.dropboxstatic.com` no top 10 — a empresa usa "FrothDrive", não Dropbox.
+
+**Passo 2 — confirmar se houve saída de dados:**
+
+```
+... dropbox ...
+| stats count sum(bytes_out) as bytes_out by dh
+| sort -bytes_out
+```
+
+- Soma os bytes de saída por host de destino, ordenado do maior para o menor.
+- Resultado indica atividade real de envio de dados para o Dropbox (fora do padrão corporativo).
+
+**Próximo passo sugerido:** olhar o **Data Loss Prevention (DLP) data model** ou logs de ferramentas de endpoint, cruzando o horário dos eventos.
+
+> Boas práticas de investigação: manter notas detalhadas dos achados; seguir as políticas da empresa e o acordo de suporte com o SOC; os dados disponíveis variam conforme o cliente, então é preciso adaptar a abordagem de busca.
+
+---
+
+## 2. Comandos SPL úteis para investigação
+
+|Comando|Uso|
+|---|---|
+|**transaction**|Agrupa eventos relacionados com base em um campo comum (ou conjunto de campos). Exemplo: agrupar sessões de um usuário com um serviço de nuvem. `user=BruceGist AND dh*.dropbox.com \| transaction user, bytes_out maxspan=1hr \| sort -bytes_out \| table dh bytes_out`|
+|**top / rare**|Identifica os valores mais (`top`) ou menos (`rare`) frequentes. Muito usado em threat hunting para achar domínios DNS incomuns. Exemplo: `sourcetype="stream:dns" \| rare limit=10 "query{}"`|
+|**first / last**|Encontra a primeira ou última ocorrência cronológica de um evento. Exemplo: primeira criação de processo associada a um evento de "execution" para um usuário.|
+|**rex**|Extrai campos usando regex (named groups) ou substitui caracteres (sed expressions). Exemplo: extrair remetente/destinatário de um e-mail: `\| rex field=_raw "From: <(?<from>.*)> To: <(?<to>.*)>"`|
+
+---
+
+## 3. Transformando resultados: lookup e eval
+
+### Lookup
+
+- Permite **adicionar dados externos ao Splunk** (ex.: um CSV com indicadores conhecidos) e usá-los para enriquecer buscas.
+- Pode ser: arquivo CSV importado, automático, scripted, vindo de banco de dados, ou usando o **KV store** do Splunk.
+- Exemplo de uso: lista de hosts que deveriam estar offline, ou usuários com senhas comprometidas conhecidas — cruzada em tempo real com os dados já indexados.
+
+**Sintaxe (obrigatório em negrito):**
+
+```
+lookup [local=<bool>] [update=<bool>] <lookup-table-name> ( <lookup-field> [AS <event-field>] )...
+[ OUTPUT | OUTPUTNEW (<lookup-destfield> [AS <event-destfield>] )... ]
+```
+
+> Sinais de atividade maliciosa via DNS: aumento no volume de requisições, mudança no tipo de resource record, variação no tamanho da requisição (indicando codificação/ofuscação), variabilidade na frequência, nomes de domínio aleatórios, ou domínios levemente alterados (typosquatting).
+
+### Eval
+
+- Calcula expressões matemáticas, de string ou booleanas, escrevendo o resultado em um novo campo.
+- Resultados numéricos/string são atribuídos automaticamente; booleanos precisam de `tostring()`.
+
+**Exemplo:**
+
+```
+index=main sourcetype=access_combined
+| eval error = if(status == 200, "OK", "Problem")
+```
+
+**Sintaxe:**
+
+```
+eval <field>=<expression>["," <field>=<expression>]...
+```
+
+---
+
+## 4. Buscando com Data Models
+
+- **Dataset**: coleção de dados com campos e restrições específicas que compõem um Data Model.
+- Exemplo — **Endpoint Data Model**, dataset "Ports":
+    - `dest_port`: busca endpoints escutando em determinada porta.
+    - `user`: conta associada à porta em escuta.
+- Outros datasets do Endpoint Data Model e seus usos:
+    - **Registry** → escalonamento de privilégios ou desativação de recursos de segurança.
+    - **Processes** → processos executados por um arquivo malicioso identificado ou usuário comprometido.
+    - **File System** → arquivos suspeitos na rede ou atividade suspeita contra arquivos importantes.
+
+### Data Models acelerados
+
+- **Acceleration**: Splunk mantém um conjunto separado de arquivos de índice (summary index) com os datasets acelerados.
+- Buscas ficam muito mais rápidas, pois usam valores já sumarizados em vez de recuperar eventos brutos.
+- Muito usado para alimentar painéis de dashboard e relatórios sob demanda (ex.: painel "Traffic over time by action" do Splunk ES, baseado no Network Traffic Data Model).
+- Buscas de Data Model tendem a ser mais complexas — usadas mais por Engenheiros/Arquitetos ao construir dashboards/correlation searches, mas é importante que o Analista entenda os Data Models e campos do ambiente.
+
+**Comando `datamodel`:**
+
+```
+| datamodel [<data model name>] [<data model search mode>] [summariesonly=<bool>]
+```
+
+- **data model name**: sem esse parâmetro, retorna o JSON do data model (útil quando não há acesso fácil à documentação). Ex.: `| datamodel authentication`
+- **search mode**: `search` (resultados como definidos) ou `flat` (remove a hierarquia dos nomes de campo).
+- **summariesonly**: só se aplica a data models acelerados. `false` (padrão) retorna dados sumarizados e não sumarizados; `true` retorna só dados já sumarizados — útil para checar o que está sumarizado ou garantir eficiência da busca.
+
+---
+
+## 5. tstats (consultas estatísticas)
+
+- Comando usado em **data models acelerados**, faz estatísticas sobre campos indexados em um arquivo de índice de séries temporais (**tsidx**).
+- Arquivo de dados bruto + arquivo tsidx = conteúdo de um índice.
+- Como o `tstats` busca em metadados indexados (não nos eventos brutos), é **mais rápido** que `stats`.
+
+**Diferença entre os três comandos:**
+
+|Comando|O que faz|
+|---|---|
+|**eval**|Cria novos campos a partir de campos existentes e uma expressão.|
+|**stats**|Calcula estatísticas agregadas (média, contagem, soma) sobre o resultado de busca já retornado (eventos brutos).|
+|**tstats**|Calcula estatísticas olhando apenas os metadados indexados — não os eventos brutos.|
+
+**Exemplo (processos iniciados em endpoints, via Endpoint Data Model):**
+
+```
+| tstats summariesonly=true count from datamodel=Endpoint.Processes
+where Processes.user="*" Processes.process=* Processes.parent_process=* Processes.user="*"
+groupby _time span=1s Processes.process Processes.parent_process Processes.user
+| `drop_dm_object_name("Processes")`
+| table _time process parent_process user count
+| sort + _time
+```
+
+---
+
+## 6. Boas práticas de busca (Better Searching)
+
+Um problema comum: buscar em **todos** os índices e sourcetypes de uma organização "só para não perder nada" — isso consome muito processamento (on-prem ou cloud) e ninguém tem recursos infinitos.
+
+**Dicas de otimização:**
+
+- Restringir o intervalo de tempo (time range) sempre que possível.
+- Usar filtros apropriados de índice e sourcetype.
+- Usar filtros e sub-searches para reduzir resultados e chegar a detalhes mais granulares.
+
+---
+
+## 7. Atividade 1 — Evidência na nuvem (AWS)
+
+### Sourcetypes comuns do Add-on da AWS
+
+|Sourcetype|O que fornece|
+|---|---|
+|**aws:cloudwatchlogs:vpcflowlog**|Metadados de tráfego IP (cabeçalho/protocolo, sem payload completo) entrando/saindo de interfaces de rede numa VPC. Equivalente ao NetFlow on-prem. Útil para diagnosticar regras restritivas de security group, monitorar tráfego, determinar direção do tráfego.|
+|**aws:s3:accesslogs**|Volume de requisições, origem, quem fez a requisição, quais objetos foram acessados, quem fez upload. Captura ações PUT, GET, DELETE no bucket.|
+|**aws:cloudtrail**|Quem, o quê, quando e onde agiu no ambiente AWS. Qualquer tentativa (com sucesso ou não) de ação contra um serviço AWS gera um evento CloudTrail.|
+|**aws:config**|Dados de configuração (rede, EC2, VPC) e histórico de mudanças. Útil quando IPs ou nomes não batem durante uma investigação.|
+|**aws:guardduty**|Serviço de detecção de ameaças da AWS — funciona como um IDS de nuvem, monitorando CloudTrail, VPC Flow e logs DNS, entre outros.|
+|**AWS:SecurityHub**|Agrega findings de vários serviços AWS num só lugar, ajudando na correlação e contexto de investigações.|
+
+### Caso 1: bucket S3 tornado público
+
+**Contexto do notable event:**
+
+- Bucket: `frothlywebcode`
+- Tornado público às 13:01 do dia 20/08.
+
+**Abordagem:**
+
+- Fonte de dados: `sourcetype=aws:s3:accesslogs`, filtrando pelo nome do bucket e por eventos **após** o horário da mudança.
+- Uso do comando `table` para visualizar campos relevantes.
+
+**Achado:** a política AWS foi passada como argumento no comando `PUT ACL`. Foi possível identificar o IP de origem e o usuário responsável (`bstoll`) pela mudança de ACL no bucket. Próximo passo: verificar se a mudança foi legítima, um erro, ou uma conta comprometida.
+
+### Caso 2: login suspeito no console AWS
+
+**Contexto do notable event:**
+
+- Usuário: `fr0thIy` (nome suspeito, não é um funcionário).
+- IP de origem: `164.90.168.162`.
+
+**Abordagem:**
+
+- Fonte de dados: `sourcetype=aws:cloudtrail`, filtrando por IP de origem e pelo usuário `fr0thIy`.
+
+**Achado:** o nome do usuário usa truques visuais (zero no lugar de "o", "I" maiúsculo no lugar de "L") — técnica comum de disfarce usada por atacantes. O usuário realizou diversas ações relacionadas à segurança.
+
+> Dica prática: para montar uma timeline de atividades de um usuário suspeito no CloudTrail, é possível excluir ações de baixo interesse (List, Get, Describe) usando o operador `!=` no SPL.
+
+---
+
+## 8. Atividade 2 — "Through the Looking Glass" (Azure e Endpoint)
+
+### Ambiente multi-cloud da Frothly
+
+- Além da AWS, a Frothly tem infraestrutura no **Microsoft Azure** e usa **Office 365** para colaboração.
+- Sourcetypes do Azure são explorados via add-on específico (Splunkbase + documentação no GitHub do add-on).
+
+### Caso: credenciais de ex-funcionário reativadas
+
+**Contexto do notable event:**
+
+- Conta: `klagerfield@froth.ly` (ex-funcionário Kevin Lagerfeld — credenciais deveriam estar desativadas).
+- IP de origem: `199.66.91.253` (login a partir do Canadá).
+
+**Abordagem:**
+
+- Fonte de dados: **Azure Active Directory sign-in logs** — `sourcetype=ms:aad:signin`.
+- Busca inicial filtrada **apenas pelo IP** (sem filtrar pelo usuário suspeito).
+
+**Achado:** dois usuários diferentes (Fyodor e `klagerfield@froth.ly`) fizeram login a partir do mesmo IP. Ao final da lista, aparece uma tentativa de login **falha** de Kevin Lagerfield no portal O365, a partir do IP suspeito.
+
+> **Lição importante:** se a busca inicial tivesse filtrado também pelo usuário suspeito, o segundo usuário (Fyodor) usando o mesmo IP não teria sido percebido. Às vezes é preciso "dar um passo atrás" (zoom out) na busca para não perder o quadro completo — o equilíbrio entre restringir e generalizar demais é chave.
+
+**O que os sign-in logs do Azure ajudam a responder:**
+
+- Quantas tentativas de login falharam num período?
+- Usuários estão logando de browsers/sistemas operacionais específicos?
+- **Quem** (identidade), **como** (aplicação/cliente usado), **o quê** (recurso acessado).
+
+### Endpoint on-premises: workstations Windows com infecções frequentes de malware
+
+- Fonte de dados: sourcetype **WinEventLog** (ponto de partida).
+- Como existem muitos tipos de log de evento do Windows, é possível refinar com `source=WinEventLog:Application`.
+- O campo **SourceNames** mostra quais aplicações estão logando na seção "Application" do Windows Event Log — incluindo apps da Microsoft e de terceiros, como **Symantec Network Protection** e **Symantec Antivirus**.
+
+> Lição de Robin: "às vezes você precisa buscar PELOS dados antes de poder buscar NOS dados" — ou seja, primeiro descobrir quais fontes de dados existem no ambiente, depois investigar de fato.
+
+---
+
+## 9. Revisão geral do curso (Onboarding Wonderland SOC)
+
+|Bloco|Conteúdo coberto|
+|---|---|
+|**Ferramentas para Analistas**|Splunk Enterprise Security, Splunk SOAR, Wireshark/Tshark, Tcpdump, CyberChef, Splunkbase (apps e add-ons).|
+|**Dados para Defesa**|Categorias de dispositivos e dados: autenticação, tráfego de rede, proxy/gateway, aplicação, endpoint, servidor; exemplos de IDS/IPS e firewall.|
+|**Cyber Threat Intelligence**|Fontes internas e externas de CTI; formatos (IOCs, TTPs, blogs, relatórios); colaboração da comunidade de segurança; não achar correspondência não significa ausência de ameaça.|
+|**Usando dados no Splunk**|Normalização via CIM; SPL; Data Models.|
+
+### Objetivos de aprendizagem alcançados no curso
+
+- Identificar tipos comuns de sistemas de defesa, ferramentas de análise e fontes de dados úteis (on-prem e cloud).
+- Identificar os níveis de Threat Intelligence e sua aplicação.
+- Pesquisar fontes de inteligência em busca de IOCs.
+- Descrever boas práticas de SIEM e conceitos básicos do Splunk ES (CIM, Data Models, acceleration).
+- Explicar e usar comandos SPL comuns: **TSTATS, TRANSACTION, FIRST/LAST, REX, EVAL, LOOKUP**.
+- Aplicar boas práticas para compor buscas eficientes.
+- Identificar recursos de SPL: **Splunk Security Essentials** e **Splunk Lantern**.
+- Descrever como o Splunk Security Essentials pode avaliar fontes de dados ou conteúdo para um sourcetype específico.
+- Analisar informações de um evento de segurança e determinar quais fontes de dados melhor guiam a investigação.
+
+**Próximo curso da trilha:** "The Art of Investigation" (foco em praticar investigações reais com cenários e estratégias).
