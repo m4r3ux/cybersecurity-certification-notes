@@ -110,8 +110,6 @@ Uma arquitetura em camadas gera **múltiplas fontes de dados relevantes** para i
 
 **Exemplo — log do Snort (possível SYN flood / DoS):**
 
-json
-
 ```json
 {
   "timestamp": "06/17-21:53:38.555249",
@@ -245,7 +243,175 @@ Cliente de exemplo do Wonderland SOC. O Splunk Cloud da Frothly é o ponto centr
 
 ---
 
-## 6. Principais conclusões (Takeaways)
+## 6. Cyber Threat Intelligence (CTI)
+
+Introduzido por Taylor, Engenheiro de SOC (desenvolve correlation searches que geram Notable Events).
+
+### O que é
+
+- **Cyber Threat Intelligence**: coleta e contextualização de dados sobre indicadores, técnicas e táticas, usados para detecção, mitigação, análise e resposta a ameaças baseada em risco.
+- Na forma mais simples: lista de **IOCs (Indicators of Compromise)** — objetos ligados a atividade maliciosa conhecida.
+
+### Níveis de Threat Intelligence
+
+|Nível|Foco|Uso principal|
+|---|---|---|
+|**Tática**|IOCs: URLs, IPs, hashes de arquivo, assinaturas de vírus|Identificar/confirmar ameaças ativas no ambiente. Corresponde à base da **Pyramid of Pain**. Dado "estala" (fica velho) rápido — atores mudam infraestrutura de ataque com frequência. Mais útil quando integrada direto às ferramentas de monitoramento.|
+|**Operacional**|TTPs (Tactics, Techniques and Procedures)|Fica no topo da Pyramid of Pain. Ajuda a melhorar monitoramento, investigações, decisões de sistema/política e threat hunting (permite identificar rapidamente a extensão de um comprometimento). Recurso público de referência: **MITRE ATT&CK Framework** (usado dentro do Splunk ES ao investigar Notable Events).|
+|**Estratégica**|Visão ampla do cenário de ameaças|Direciona a estratégia organizacional geral (mais voltada a líderes).|
+
+> Analistas trabalham principalmente com os níveis **tático** e **operacional**.
+
+### Fontes de Threat Intelligence
+
+**Internas à organização:**
+
+- Relatórios de incidentes, tickets, anotações de investigações anteriores, logs de e-mails suspeitos.
+- Dados históricos únicos da empresa, revelam padrões próprios ao longo do tempo.
+
+**Externas à organização:**
+
+|Tipo|Características|Exemplos|
+|---|---|---|
+|**Sharing Groups (ISAC / ISAO)**|Organizações formadas por membros que centralizam e compartilham inteligência coletiva|**ISAC**: focado em setores de infraestrutura crítica (ex.: FS-ISAC para serviços financeiros, ISAC de Retail & Hospitality). **ISAO**: cobre indústrias/regiões semelhantes no setor público e privado (ex.: CompTIA, grupos estaduais de governo).|
+|**Open Source Intelligence (OSINT)**|Blogs, feeds RSS, APIs abertas. Valioso, porém menos curado/monitorado — muitas vezes só lista IOCs, sem contexto adicional.|US-CERT, Hybrid Analysis, AlienVault|
+|**Commercial Intelligence**|Fornecedores especializados, geralmente pagos (algumas versões gratuitas limitadas). Entrega dados curados, com score de reputação/risco e relatórios detalhando como a ameaça opera.|Recorded Future, CrowdStrike Falcon Intelligence, Mandiant|
+
+> Cada fornecedor/comunidade costuma se especializar em um tipo de dado (ex.: só domínios de phishing, ou só atores de malware) — por isso é comum assinar/consultar **múltiplas fontes**.
+
+### Por que CTI é valiosa
+
+- Combinada com monitoramento automatizado, melhora a qualidade dos alertas e reduz falsos positivos.
+- Acelera a triagem, permitindo validar rapidamente se um objeto observado está ligado a uma ameaça conhecida.
+- **Dissemination (disseminação)** é essencial: compartilhar o que se aprende com outros times, dentro e fora da organização, fortalece a comunidade de defesa como um todo.
+
+### Pontos-chave finais sobre CTI
+
+- Diferentes fontes são especializadas em diferentes tipos de dado — vale conhecer mais de uma.
+- OSINT é construída pela comunidade, nem sempre totalmente curada — use como apoio, não como única fonte de decisão.
+- **Não encontrar correspondência** em uma base de Threat Intel não significa que o indicador é inofensivo — pode simplesmente não ter sido reportado/identificado ainda. Continue investigando até ter certeza.
+- Objetivo final: **automatizar** o uso de CTI (integração com ferramentas) para ganhar eficiência — trabalho conjunto entre Analistas e Engenheiros.
+
+### Ferramentas e protocolos de CTI (bom conhecer, mesmo fora da área de Engenharia)
+
+|Ferramenta/Protocolo|Descrição|
+|---|---|
+|**MISP** (Malware Information Sharing Platform)|Plataforma open-source e gratuita para armazenar, compartilhar e trabalhar com threat intelligence em larga escala. Projeto comunitário.|
+|**TAXII** (Trusted Automated Exchange of Intelligence Information)|Protocolo de aplicação para troca de CTI via HTTPS. Usado por ferramentas/fornecedores para operacionalizar a inteligência.|
+|**STIX** (Structured Threat Information Expression)|Linguagem/formato de serialização para facilitar a troca de CTI. Open source e gratuito.|
+
+---
+
+## 7. Splunk na prática (com Ashley, Analista SOC I)
+
+### Campos padrão para identificar a origem do dado
+
+|Campo|Definição|
+|---|---|
+|**host**|Nome do dispositivo físico ou virtual de onde o evento se origina (ex.: endpoint Linux/Windows, firewall, proxy).|
+|**source**|Nome do arquivo, diretório, data stream ou input de onde o evento se origina (ex.: caminho completo do arquivo/diretório monitorado).|
+|**sourcetype**|Campo padrão que identifica a **estrutura de dados** do evento. Determina como o Splunk formata o dado na indexação e como ele é exibido nas buscas.|
+
+> Dados de hosts/sources diferentes podem compartilhar o mesmo sourcetype. Ex.: logs Linux em `/var/log/messages` e Syslog recebido via UDP:514 de outro servidor podem ter o mesmo sourcetype `linux_syslog`.
+
+### Comandos úteis para explorar um ambiente novo (Splunk Search & Reporting / "Search App" / "Core Splunk")
+
+**1. Descobrir os índices (indexes)** — repositórios onde o Splunk armazena os dados indexados (em arquivos flat no indexer):
+
+```
+index=* | stats count by index | fields index
+```
+
+**2. Descobrir os hosts** — usa o comando `metadata`:
+
+```
+| metadata type=hosts index=*
+```
+
+**3. Descobrir os sourcetypes:**
+
+```
+| metadata type=sourcetypes index=*
+```
+
+**4. Descobrir os sources:**
+
+```
+| metadata type=sources index=*
+```
+
+> O comando `metadata` retorna uma lista de sources, sourcetypes ou hosts de um índice (ou peer de busca distribuída) especificado.
+
+### Origem dos sourcetypes
+
+- **Pretrained (pré-treinados)**: sourcetypes nativos/embutidos do Splunk, reconhecidos e atribuídos automaticamente à maioria dos dados recebidos. Também podem ser atribuídos manualmente quando o Splunk não reconhece o formato sozinho.
+- **De Add-ons e Apps**: add-ons trazem inputs pré-configurados que definem o sourcetype apropriado para uma tecnologia de terceiros, podendo separar os dados em vários sourcetypes específicos.
+    - Exemplo AWS: `aws:cloudwatchlogs` (dado genérico do CloudWatch Logs) vs. `aws:cloudwatchlogs:vpcflow` (sourcetype específico para VPC Flow Logs vindos do CloudWatch Logs).
+
+### Por que a normalização de dados importa
+
+- Incidentes de segurança raramente se limitam a um único dispositivo: atacantes tentam múltiplos pontos de entrada e, após o sucesso, tendem a se mover lateralmente pela rede.
+- Analistas precisam investigar múltiplas camadas de defesa, cada uma gerando dados em formatos diferentes.
+- Como ninguém pode ser especialista em todos os tipos de log, a **normalização** (seguir um esquema de classificação comum) permite trabalhar com qualquer fonte sem precisar conhecer a sintaxe exata de cada uma.
+
+---
+
+## 8. Splunk Data Models e o Common Information Model (CIM)
+
+### O que são Data Models
+
+- Um **data model** é um conjunto padronizado de nomes e valores de campo que facilita trabalhar com múltiplas fontes de dados.
+- Analogia: é como rotular todas as caixas de uma gaveta bagunçada — na próxima vez que precisar de tesoura, grampeador ou fita, você sabe exatamente em qual caixa procurar, sem revirar tudo.
+
+### Common Information Model (CIM)
+
+- O **CIM** é uma coleção de data models definidos pelo Splunk para os tipos de dado mais relevantes à segurança em ambientes corporativos.
+- A maioria das ferramentas Splunk (nativas e de terceiros no Splunkbase), assim como praticamente todas as correlation searches padrão do Enterprise Security, **esperam dados compatíveis com o CIM**.
+- Adotar o CIM evita customização desnecessária e permite que relatórios, alertas e detecções funcionem "out of the box".
+- Tornar os dados CIM-compliant normalmente é responsabilidade de **Engenheiros/Arquitetos**, não do Analista — mas se um relatório não estiver populando ou um alerta não disparar como esperado, a causa pode ser dado fora do padrão CIM.
+
+### Exemplo: Data Model de Authentication
+
+- Reúne eventos de **todas** as fontes/índices marcados com a tag "authentication" (ex.: Windows Security logs, logs de autenticação Linux, Active Directory).
+- Tem hierarquia interna: autenticações falhas, autenticações bem-sucedidas, e outras categorias de mensagens, funcionando como filtros/constraints adicionais.
+- Não é necessário especificar "autenticação Windows" ou "autenticação de rede" separadamente — o data model já cobre todos os tipos.
+- Data models também são usados nos bastidores pelas **correlation searches** do Splunk ES.
+
+### Comparando busca com SPL puro x busca com Data Model
+
+**Buscando ataques de força bruta (SPL puro, só Windows):**
+
+```
+index=example sourcetype=win*security user=* user!=""
+| transaction EventCode=4625
+| stats count by host, user, src_ip
+| where count > 50
+```
+
+Problema: cobre só Windows. Para incluir Linux, O365, Azure, AWS, a busca cresceria muito e não escalaria bem.
+
+**Mesmo objetivo, usando o Data Model de Authentication (exemplo do Splunk ES):**
+
+```
+| from datamodel:"Authentication"."Authentication"
+| stats values(tag) as tag, values(app) as app, count(eval('action'=="failure")) as failure, count(eval('action'=="success")) as success by src
+| search success>0
+| xswhere failure from failures_by_src_count_1h in authentication is above medium
+```
+
+Vantagem: cobre automaticamente Windows, Linux, cloud (Azure/AWS) e qualquer outra fonte normalizada com a tag de autenticação — sem precisar reescrever a lógica para cada tecnologia.
+
+> **Lição central**: SOC teams devem se esforçar para garantir que todo dado enviado ao Splunk seja **CIM compliant**.
+
+### Data Models comuns em investigações de segurança
+
+Authentication, Data Access, Databases, Data Loss Prevention, Email, Endpoint, Intrusion Detection, Malware, Network Traffic, Vulnerabilities, Web.
+
+> O(s) data model(s) mais úteis dependem do que está sendo investigado e dos dados disponíveis.
+
+---
+
+## 9. Principais conclusões (Takeaways)
 
 - O Wonderland SOC é um MSSP que atende várias empresas, cada uma com arquitetura própria.
 - Analistas usam teorias de defesa (Defense in Depth, Zero Trust, Active Defense, Resilience Theory) — frequentemente combinadas.
@@ -256,3 +422,7 @@ Cliente de exemplo do Wonderland SOC. O Splunk Cloud da Frothly é o ponto centr
 - Cada tipo de log tem campos e sinais específicos de investigação — é preciso desenvolver a habilidade de reconhecer informação relevante mesmo em logs desconhecidos.
 - Estudo de caso Frothly Brewery ilustra como mapear fontes de dados a partir da arquitetura (cloud: AWS + Azure; on-premises: workstations, servidores, firewall).
 - **Lição-chave**: nenhum analista conhece de antemão todos os detalhes de um novo ambiente — o primeiro passo é sempre entender a arquitetura para saber quais dados esperar e onde encontrá-los.
+- Cyber Threat Intelligence (CTI) fornece contexto (tático, operacional, estratégico) que ajuda a validar rapidamente se algo observado está ligado a uma ameaça conhecida.
+- Fontes de CTI vão de dados internos (histórico da própria empresa) a sharing groups (ISAC/ISAO), OSINT e fontes comerciais — o ideal é combinar várias.
+- Splunk identifica a origem de um dado por três campos: host, source e sourcetype; comandos como `metadata` ajudam a mapear um ambiente novo rapidamente.
+- O Common Information Model (CIM) normaliza dados de fontes diferentes sob nomes de campo padronizados, permitindo que data models (ex.: Authentication) substituam buscas SPL longas e não escaláveis.
